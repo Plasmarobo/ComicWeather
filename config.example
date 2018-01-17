@@ -1,0 +1,19 @@
+[dns]
+host: 8.8.8.8
+port: 53
+
+[directories]
+images: ./images
+config_wifi_script: ../RaspiWiFi/initial_setup.py
+
+[misc]
+check_interval: 300
+zip: 02144
+night_mode_start: 2200
+night_mode_end: 700
+
+[renderer]
+width:480
+height:320
+backlight_gpio:24
+reset_gpio:25
