@@ -152,7 +152,7 @@ class ComicWeather(object):
         self.text_offset = int(config.get('renderer', 'text_offset'))
         self.width = int(config.get('renderer', 'width'))
         self.height = int(config.get('renderer', 'height'))
-        self.backlight_gpio = config.get('renderer', 'backlight_gpio')
+        self.backlight_gpio = int(config.get('renderer', 'backlight_gpio'))
 
         GPIO.setup(self.backlight_gpio, GPIO.OUT)
 
