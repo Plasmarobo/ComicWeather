@@ -8,9 +8,11 @@ import sys
 import urllib.request
 from datetime import date, datetime
 from os import listdir, path, system
+import subprocess
 import re
 import socket
 import pygame
+from pygame_vkeyboard import *
 import ptext
 import RPi.GPIO as GPIO
 
@@ -122,6 +124,131 @@ class ImagePicker(object):
     def get_random(self):
         return random.sample(self.images, 1)[0]['file']
 
+class WiFiManager(object):
+    """A class to handle updating the WiFi"""
+    QWERTY = [
+        '1234567890',
+        'qwertyuiop',
+        'asdfghjkl',
+        'zxcvbnm'
+    ]
+    STATE_SSID = "WiFi Name:"
+    STATE_PASSWORD = "WiFI Password:"
+    STATE_CONFIRM = "Type 'yes' if correct"
+
+    def __init__(self, screen, width, height):
+        self.key_layout = VKeyboardLayout(self.QWERTY)
+        self.height = height
+        self.width = width
+        self.virtual_keyboard = VKeyboard(
+            screen, 
+            self.handle_text_changed,
+            self.key_layout
+        )
+        self.state = self.STATE_SSID
+        self.current_string = ""
+        self.ssid = ""
+        self.passwd = ""
+        self.label = ""
+        self.enabled = False
+
+    def handle_text_changed(self, buffer):
+        if (buffer[-1] == '\n'):
+            self.handle_enter()
+        else:
+            self.current_string = buffer
+
+    def handle_enter(self):
+        if (self.state == self.STATE_SSID):
+            self.ssid = self.current_string
+            self.reset_state(self.STATE_PASSWORD)
+        elif (self.state == self.STATE_PASSWORD):
+            self.passwd = self.current_string
+            self.reset_state(self.STATE_CONFIRM)
+        elif (self.state == self.STATE_CONFIRM):
+            if (self.current_string == "yes"):
+                self.state = self.STATE_SSID
+                self.disable()
+                self.update_wifi()
+            else:
+                self.reset_state(self.STATE_SSID)
+        else:
+            self.reset_state(self.STATE_SSID)
+            self.disable()
+
+    def reset_state(self, new_state):
+        self.current_string = ""
+        self.state = new_state
+
+    def enable(self):
+        self.virtual_keyboard.enable()
+        self.enabled = True
+        self.reset_state(self.STATE_SSID)
+    
+    def disable(self):
+        self.virtual_keyboard.disable()
+        self.enabled = False
+
+    def update(self, event):
+        if (self.enabled):
+            self.virtual_keyboard.on_event(event)
+
+    def check_wifi(self, dns_host, dns_port):
+        try:
+            socket.setdefaulttimeout(1)
+            socket.socket(
+                socket.AF_INET,
+                socket.SOCK_STREAM
+            ).connect((
+                dns_host,
+                dns_port
+            ))
+            return True
+        except Exception as exp:
+            print(exp)
+            pass
+        return False
+
+    def update_wifi(self):
+        subprocess.call([
+            "sudo sed",
+            "-i",
+            "-e",
+            's/\twpa-ssid*/\twpa-ssid "%s"/g' % self.ssid,
+            "/etc/network/interfaces"
+        ])
+        subprocess.call([
+            "sudo sed",
+            "-i",
+            "-e",
+            's/\twpa-psk*/\twpa-psk "%s"/g' % self.passwd,
+            "/etc/network/interfaces"
+        ])
+        subprocess.call(["sudo reboot"])
+        exit(0)
+
+    def render(self):
+        ptext.draw(
+            self.state,
+            centery=(self.height/2)+65,
+            left=32,
+            owidth=0.2,
+            ocolor=(0,0,0),
+            color=(255,255,255),
+            angle=90,
+            fontsize=72
+        )
+        ptext.draw(
+            self.current_string,
+            centery=(self.height/2)+65,
+            left=64,
+            owidth=0.2,
+            ocolor=(0,0,0),
+            color=(255,255,255),
+            angle=90,
+            fontsize=72
+        )
+
 class ComicWeather(object):
     """A class to convert from weather to image"""
     SEC_TO_MSEC = 1000
@@ -156,19 +283,21 @@ class ComicWeather(object):
 
         GPIO.setup(self.backlight_gpio, GPIO.OUT)
 
-        self.online = self.check_wifi()
-
         self.location = Locations(self.zip)
         self.weather = WeatherAPI(self.location.get_zipcode())
         self.season = Seasons()
         self.images = ImagePicker(self.image_directory)
         self.update_image()
         pygame.init()
+        pygame.mouse.set_visible(False)
 
+        self.setup_mode = False
         self.screen = pygame.display.set_mode((self.width, self.height))
         self.timer = pygame.time.get_ticks()
         self.font = pygame.font.SysFont(None, 28)
         self.wifi_symbol = pygame.transform.rotate(pygame.image.load("wifi-setup.png"), 90)
+        self.wifi_manager = WiFiManager(self.screen, self.width, self.height)
+        self.online = self.wifi_manager.check_wifi(self.dns_host, self.dns_port)
         self.finished = False
 
     def update_location(self):
@@ -197,9 +326,10 @@ class ComicWeather(object):
     def update(self):
         if self.check_interval < (pygame.time.get_ticks() - self.timer):
             self.update_image()
-            self.online = self.check_wifi()
+            self.online = self.wifi_manager.check_wifi(self.dns_host, self.dns_port)
 
         for event in pygame.event.get():
+            self.wifi_manager.update(event)
             if event.type == pygame.QUIT:
                 self.finished = True
             elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -207,28 +337,8 @@ class ComicWeather(object):
                 self.handle_touch(x, y)
         self.render()
 
-    def check_wifi(self):
-        try:
-            socket.setdefaulttimeout(1)
-            socket.socket(
-                socket.AF_INET,
-                socket.SOCK_STREAM
-            ).connect((
-                self.dns_host,
-                self.dns_port
-            ))
-            return True
-        except Exception as exp:
-            print(exp.message)
-            pass
-        return False
-
     def set_backlight(self, on):
         GPIO.output(self.backlight_gpio, GPIO.HIGHT if on else GPIO.LOW)
-
-    def enter_setup_mode(self):
-        # Call an external script to setup wifi config
-        system(self.configure_wifi_script)
 
     def is_night(self):
         current_hour = datetime.now().hour
@@ -248,31 +358,32 @@ class ComicWeather(object):
             self.set_backlight(on)
         
     def render(self):
-        if self.is_night and not self.night_mode:
-            self.set_night_mode(True)
-        elif not self.is_night and self.night_mode:
-            self.set_night_mode(False)
-        # Clear screen
-        self.screen.fill((255,255,255))
-        # Render Image
-        rect = self.current_image.get_rect()
-        self.screen.blit(self.current_image, rect)
-        # Render Time + Info
-        txt = datetime.strftime(datetime.now(), "%H:%M")
-        ptext.draw(txt, centery=(self.height/2)+55, left=self.text_offset, owidth=0.2, ocolor=(0,0,0), color=(255,255,255), angle=90, fontsize=72)
-        # Render warning if we're offline
-        r = self.wifi_symbol.get_rect()
-        if not self.online:
-            self.screen.blit(self.wifi_symbol, (self.width-r.width,(self.height/2)-(r.height/2) ))
-            # Wait
+        if (not self.wifi_manager.enabled):
+            if self.is_night and not self.night_mode:
+                self.set_night_mode(True)
+            elif not self.is_night and self.night_mode:
+                self.set_night_mode(False)
+            # Clear screen
+            self.screen.fill((255,255,255))
+            # Render Image
+            rect = self.current_image.get_rect()
+            self.screen.blit(self.current_image, rect)
+            # Render Time + Info
+            txt = datetime.strftime(datetime.now(), "%H:%M")
+            ptext.draw(txt, centery=(self.height/2)+65, left=self.text_offset, owidth=0.2, ocolor=(0,0,0), color=(255,255,255), angle=90, fontsize=72)
+            # Render warning if we're offline
+            r = self.wifi_symbol.get_rect()
+            if (not self.online):
+                self.screen.blit(self.wifi_symbol, (self.width-r.width,(self.height/2)-(r.height/2)))
         pygame.display.flip()
 
     def handle_touch(self, x, y):
-        r = self.wifi_symbol.get_rect()
-        if r.top <= y and (r.top + r.height) >= y:
-            if r.left <= x and (r.left + r.width) >= x:
-                self.enter_setup_mode()
-        self.update_image()
+        if (not self.setup_mode):
+            r = self.wifi_symbol.get_rect()
+            r.left = self.width - r.width
+            if y <= r.width:
+                self.wifi_manager.enable()
+            self.update_image()
 
 def main():
     print("Starting...")
